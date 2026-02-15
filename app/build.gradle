@@ -3,9 +3,21 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def localProps = new Properties()
+localProps.load(new FileInputStream(rootProject.file("local.properties")))
+
 android {
     namespace 'com.mytuner'
     compileSdk 34
+
+    signingConfigs {
+        release {
+            storeFile file(localProps['RELEASE_STORE_FILE'])
+            storePassword localProps['RELEASE_STORE_PASSWORD']
+            keyAlias localProps['RELEASE_KEY_ALIAS']
+            keyPassword localProps['RELEASE_KEY_PASSWORD']
+        }
+    }
 
     defaultConfig {
         applicationId "com.mytuner"
@@ -22,6 +34,7 @@ android {
 
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
