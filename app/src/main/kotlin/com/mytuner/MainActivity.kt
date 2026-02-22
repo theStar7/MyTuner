@@ -26,6 +26,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +52,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,9 +65,13 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -84,21 +90,29 @@ val DuoYellow = Color(0xFFFFC800)
 val DuoRed = Color(0xFFFF4B4B)
 val DuoInk = Color(0xFF4B4B4B)
 val DuoMuted = Color(0xFF8F9AA7)
-val DuoTrack = Color(0xFFDDE6F3)
+val DuoTrack = Color(0xFFE1E1E1)
 
-private val PitchTrackDividerColor = DuoTrack
+// 分割线样式：颜色、透明度、线宽和虚线长度/间隔
+private val PitchTrackDividerColor = Color(0xFFE7C091)
 private const val PitchTrackDividerAlpha = 0.35f
 private val PitchTrackDividerStrokeWidth = 1.25.dp
 private val PitchTrackDividerDashLength = 6.dp
 private val PitchTrackDividerDashGap = 4.dp
-private val PitchTrackTraceStrokeWidth = 4.dp
+// 波动线宽度
+private val PitchTrackTraceStrokeWidth = 2.dp
 
-private val PitchTrackGraphHeight = 148.dp
+// 图表和轨迹参数：固定高度、历史窗口、X 步长、可见半音跨度和标签字体大小
+private val PitchTrackGraphHeight = 260.dp
 private const val PitchTrackVisibleHistoryWindowSize = 72
+private const val PitchTrackStoredHistorySampleCount = 720
 private const val PitchTrackXStepSampleCount = PitchTrackVisibleHistoryWindowSize
-private const val PitchTrackVisibleSemitoneSpan = 12
+private const val PitchTrackVisibleSemitoneSpan = 8
 private const val PitchTrackEdgePaddingSemitone = 1.5f
 private const val PitchTrackLabelTextSizePx = 24f
+private val PitchTrackLabelZoneWidth = 56.dp
+private val PitchTrackLabelGap = 6.dp
+private val PitchTrackHeadGuideColor = DuoYellow.copy(alpha = 0.85f)
+private val PitchTrackHeadGuideStrokeWidth = 1.5.dp
 
 class MainActivity : ComponentActivity() {
 
@@ -139,6 +153,8 @@ fun MainScreen() {
 fun PitchScreen(vm: PitchViewModel = viewModel()) {
     val state by vm.uiState.collectAsState()
     val history = remember { mutableStateListOf<Float>() }
+    var historyOffsetSamples by remember { mutableStateOf(0) }
+    var verticalPanOffsetSemitone by remember { mutableStateOf(0f) }
     val isInTune = state.pitch > 0 && abs(state.centsOff) < 5
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
@@ -175,16 +191,40 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
         label = "pulseScale"
     )
 
-    LaunchedEffect(state.pitch) {
+    LaunchedEffect(state.pitch, state.isRunning) {
         if (state.isRunning) {
             history.add(state.pitch)
-            while (history.size > PitchTrackVisibleHistoryWindowSize) {
+            while (history.size > PitchTrackStoredHistorySampleCount) {
                 history.removeAt(0)
             }
-        } else {
-            history.clear()
+            historyOffsetSamples = 0
+            verticalPanOffsetSemitone = 0f
         }
     }
+
+    LaunchedEffect(state.isRunning) {
+        if (!state.isRunning) {
+            historyOffsetSamples = pitchTrackPanMinOffset(PitchTrackVisibleHistoryWindowSize)
+        }
+    }
+
+    val panMinOffset = pitchTrackPanMinOffset(PitchTrackVisibleHistoryWindowSize)
+    val panMaxOffset = pitchTrackPanMaxOffset(
+        historySize = history.size,
+        visibleSampleCount = PitchTrackVisibleHistoryWindowSize
+    )
+
+    LaunchedEffect(history.size, state.isRunning) {
+        if (!state.isRunning) {
+            val clampedOffset = historyOffsetSamples.coerceIn(panMinOffset, panMaxOffset)
+            if (historyOffsetSamples != clampedOffset) {
+                historyOffsetSamples = clampedOffset
+            }
+        }
+    }
+
+    var pausedMarkerNoteName by remember { mutableStateOf("-") }
+    val tunerDisplayedNoteName = if (state.isRunning) state.noteName else pausedMarkerNoteName
 
     Surface(modifier = Modifier.fillMaxSize(), color = DuoSky) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -217,6 +257,7 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                         StatusCard(state = state, pulseScale = pulseScale)
                         TunerCard(
                             state = state,
+                            displayedNoteName = tunerDisplayedNoteName,
                             isInTune = isInTune,
                             noteScale = noteScale,
                             noteColor = noteColor,
@@ -236,6 +277,12 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                         PitchTrackCard(
                             history = history,
                             currentNoteName = state.noteName,
+                            isRunning = state.isRunning,
+                            historyOffsetSamples = historyOffsetSamples,
+                            onHistoryOffsetSamplesChange = { historyOffsetSamples = it },
+                            verticalPanOffsetSemitone = verticalPanOffsetSemitone,
+                            onVerticalPanOffsetSemitoneChange = { verticalPanOffsetSemitone = it },
+                            onPausedMarkerNoteNameChange = { pausedMarkerNoteName = it },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
@@ -264,17 +311,24 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                     StatusCard(state = state, pulseScale = pulseScale)
                     TunerCard(
                         state = state,
+                        displayedNoteName = tunerDisplayedNoteName,
                         isInTune = isInTune,
                         noteScale = noteScale,
                         noteColor = noteColor,
                         cardLift = cardLift,
-                        gaugeSize = 300.dp,
+                        gaugeSize = 280.dp,
                         gaugeHeight = 280.dp,
                         noteFontSize = 94.sp
                     )
                     PitchTrackCard(
                         history = history,
-                        currentNoteName = state.noteName
+                        currentNoteName = state.noteName,
+                        isRunning = state.isRunning,
+                        historyOffsetSamples = historyOffsetSamples,
+                        onHistoryOffsetSamplesChange = { historyOffsetSamples = it },
+                        verticalPanOffsetSemitone = verticalPanOffsetSemitone,
+                        onVerticalPanOffsetSemitoneChange = { verticalPanOffsetSemitone = it },
+                        onPausedMarkerNoteNameChange = { pausedMarkerNoteName = it }
                     )
                     ControlButton(
                         isRunning = state.isRunning,
@@ -340,6 +394,7 @@ private fun StatusCard(state: PitchState, pulseScale: Float) {
 @Composable
 private fun TunerCard(
     state: PitchState,
+    displayedNoteName: String,
     isInTune: Boolean,
     noteScale: Float,
     noteColor: Color,
@@ -376,7 +431,7 @@ private fun TunerCard(
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = state.noteName,
+                        text = displayedNoteName,
                         style = MaterialTheme.typography.displayLarge.copy(
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = noteFontSize
@@ -426,6 +481,12 @@ private fun TunerCard(
 private fun PitchTrackCard(
     history: List<Float>,
     currentNoteName: String,
+    isRunning: Boolean,
+    historyOffsetSamples: Int,
+    onHistoryOffsetSamplesChange: (Int) -> Unit,
+    verticalPanOffsetSemitone: Float,
+    onVerticalPanOffsetSemitoneChange: (Float) -> Unit,
+    onPausedMarkerNoteNameChange: (String) -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth(),
     contentModifier: Modifier = Modifier
         .fillMaxWidth()
@@ -454,12 +515,25 @@ private fun PitchTrackCard(
                     color = DuoInk
                 )
                 Text(
-                    text = if (currentNoteName == "-") "Current --" else "Current $currentNoteName",
+                    text = when {
+                        !isRunning && history.isNotEmpty() -> "Paused - Drag to pan"
+                        currentNoteName == "-" -> "Current --"
+                        else -> "Current $currentNoteName"
+                    },
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                     color = DuoMuted
                 )
             }
-            FrequencyGraph(history = history, modifier = graphModifier)
+            FrequencyGraph(
+                history = history,
+                isRunning = isRunning,
+                historyOffsetSamples = historyOffsetSamples,
+                onHistoryOffsetSamplesChange = onHistoryOffsetSamplesChange,
+                verticalPanOffsetSemitone = verticalPanOffsetSemitone,
+                onVerticalPanOffsetSemitoneChange = onVerticalPanOffsetSemitoneChange,
+                onPausedMarkerNoteNameChange = onPausedMarkerNoteNameChange,
+                modifier = graphModifier
+            )
         }
     }
 }
@@ -561,19 +635,46 @@ fun TunerGauge(centsOff: Float, isInTune: Boolean, modifier: Modifier = Modifier
 }
 
 @Composable
-fun FrequencyGraph(history: List<Float>, modifier: Modifier = Modifier) {
-    val latestMidi = history.asReversed().firstNotNullOfOrNull { hzToMidi(it) }
+fun FrequencyGraph(
+    history: List<Float>,
+    isRunning: Boolean,
+    historyOffsetSamples: Int,
+    onHistoryOffsetSamplesChange: (Int) -> Unit,
+    verticalPanOffsetSemitone: Float,
+    onVerticalPanOffsetSemitoneChange: (Float) -> Unit,
+    onPausedMarkerNoteNameChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    val labelZoneWidthPx = with(density) { PitchTrackLabelZoneWidth.toPx() }
+    val labelGapPx = with(density) { PitchTrackLabelGap.toPx() }
+    val maxOffset = pitchTrackMaxOffset(
+        historySize = history.size,
+        visibleSampleCount = PitchTrackVisibleHistoryWindowSize
+    )
+    val panMinOffset = pitchTrackPanMinOffset(PitchTrackVisibleHistoryWindowSize)
+    val panMaxOffset = pitchTrackPanMaxOffset(
+        historySize = history.size,
+        visibleSampleCount = PitchTrackVisibleHistoryWindowSize
+    )
+    val boundedHistoryOffset = historyOffsetSamples.coerceIn(0, maxOffset)
+    val historyOverflowOffset = historyOffsetSamples - boundedHistoryOffset
+    val visibleHistory = pitchTrackVisibleWindow(
+        frequencies = history,
+        visibleSampleCount = PitchTrackVisibleHistoryWindowSize,
+        offsetFromLatest = if (isRunning) 0 else boundedHistoryOffset
+    )
+    val latestMidi = visibleHistory.asReversed().firstNotNullOfOrNull { hzToMidi(it) }
     var targetCenterMidi by remember { mutableStateOf(latestMidi ?: 69f) }
 
-    LaunchedEffect(latestMidi) {
-        if (latestMidi != null) {
-            targetCenterMidi = pitchTrackPannedCenterMidi(
-                currentCenterMidi = targetCenterMidi,
-                latestMidi = latestMidi,
-                visibleSemitoneSpan = PitchTrackVisibleSemitoneSpan,
-                edgePaddingSemitone = PitchTrackEdgePaddingSemitone
-            )
-        }
+    LaunchedEffect(latestMidi, isRunning) {
+        targetCenterMidi = pitchTrackTargetCenterMidi(
+            currentCenterMidi = targetCenterMidi,
+            latestMidi = latestMidi,
+            isRunning = isRunning,
+            visibleSemitoneSpan = PitchTrackVisibleSemitoneSpan,
+            edgePaddingSemitone = PitchTrackEdgePaddingSemitone
+        )
     }
 
     val animatedCenterMidi by animateFloatAsState(
@@ -581,12 +682,104 @@ fun FrequencyGraph(history: List<Float>, modifier: Modifier = Modifier) {
         animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
         label = "pitchTrackCenterMidi"
     )
+    val displayedCenterMidi = if (isRunning) {
+        animatedCenterMidi
+    } else {
+        targetCenterMidi + verticalPanOffsetSemitone
+    }
+
+    val canPanHistory = !isRunning && history.isNotEmpty()
+    val latestHistoryOffset by rememberUpdatedState(newValue = historyOffsetSamples.coerceIn(panMinOffset, panMaxOffset))
+    val latestOnHistoryOffsetSamplesChange by rememberUpdatedState(newValue = onHistoryOffsetSamplesChange)
+    val latestVerticalPanOffsetSemitone by rememberUpdatedState(newValue = verticalPanOffsetSemitone)
+    val latestOnVerticalPanOffsetSemitoneChange by rememberUpdatedState(newValue = onVerticalPanOffsetSemitoneChange)
+    var graphSize by remember { mutableStateOf(IntSize.Zero) }
+
+    val calcTraceWidth = (graphSize.width.toFloat() - labelZoneWidthPx).coerceAtLeast(0f)
+    val calcStep = pitchTrackXStep(calcTraceWidth, PitchTrackXStepSampleCount.coerceAtLeast(1))
+    val lastValidIndex = visibleHistory.indexOfLast { it > 0f }
+    val calcUsedWidth = (lastValidIndex.coerceAtLeast(0) * calcStep).coerceAtMost(calcTraceWidth)
+    val calcWaveAnchorX = pitchTrackWaveAnchorX(waveWidth = calcTraceWidth, isRunning = isRunning)
+    val calcPauseCompensationPx = if (!isRunning) {
+        pitchTrackPauseCompensationPx(calcTraceWidth)
+    } else {
+        0f
+    }
+    val calcRelativeOverflowOffset = if (isRunning) 0 else historyOverflowOffset - panMinOffset
+    val calcTrailingOffset = calcWaveAnchorX - calcUsedWidth + (calcRelativeOverflowOffset * calcStep) + calcPauseCompensationPx
+    val calcMarkerX = pitchTrackTimeMarkerX(waveWidth = calcTraceWidth).coerceIn(0f, calcTraceWidth)
+    val pausedMarkerNoteName = pitchTrackMarkerFrequencyAtX(
+        frequencies = visibleHistory,
+        markerX = calcMarkerX,
+        trailingOffsetPx = calcTrailingOffset,
+        stepPx = calcStep
+    )?.let { NoteUtils.calculateNoteAndCents(it).first } ?: "-"
+
+    LaunchedEffect(isRunning, pausedMarkerNoteName) {
+        if (!isRunning) {
+            onPausedMarkerNoteNameChange(pausedMarkerNoteName)
+        }
+    }
+
+    val panModifier = if (canPanHistory) {
+        Modifier.pointerInput(isRunning, panMinOffset, panMaxOffset) {
+            var dragCarryPx = 0f
+            var gestureOffset = latestHistoryOffset
+            var gestureVerticalPanOffset = latestVerticalPanOffsetSemitone
+            detectDragGestures(
+                onDragStart = {
+                    dragCarryPx = 0f
+                    gestureOffset = latestHistoryOffset
+                    gestureVerticalPanOffset = latestVerticalPanOffsetSemitone
+                },
+                onDrag = { change, dragAmount ->
+                    change.consume()
+
+                    val canvasWidth = size.width.toFloat()
+                    val traceWidth = (canvasWidth - labelZoneWidthPx).coerceAtLeast(0f)
+                    val stepPx = pitchTrackXStep(
+                        width = traceWidth,
+                        sampleCount = PitchTrackXStepSampleCount
+                    )
+                    val nextPanState = pitchTrackNextPanOffset(
+                        currentOffset = gestureOffset,
+                        dragAmountPx = dragAmount.x,
+                        stepPx = stepPx,
+                        minOffset = panMinOffset,
+                        maxOffset = panMaxOffset,
+                        carryPx = dragCarryPx
+                    )
+
+                    dragCarryPx = nextPanState.carryPx
+                    if (nextPanState.offset != gestureOffset) {
+                        gestureOffset = nextPanState.offset
+                        latestOnHistoryOffsetSamplesChange(nextPanState.offset)
+                    }
+
+                    val nextVerticalPanOffset = pitchTrackNextVerticalPanOffset(
+                        currentOffsetSemitone = gestureVerticalPanOffset,
+                        dragAmountPx = dragAmount.y,
+                        graphHeightPx = size.height.toFloat(),
+                        visibleSemitoneSpan = PitchTrackVisibleSemitoneSpan,
+                        maxAbsOffsetSemitone = Float.MAX_VALUE
+                    )
+                    if (abs(nextVerticalPanOffset - gestureVerticalPanOffset) > 0.0001f) {
+                        gestureVerticalPanOffset = nextVerticalPanOffset
+                        latestOnVerticalPanOffsetSemitoneChange(nextVerticalPanOffset)
+                    }
+                }
+            )
+        }
+    } else {
+        Modifier
+    }
 
     Canvas(
         modifier = modifier
+            .then(panModifier)
+            .onSizeChanged { graphSize = it }
             .border(2.dp, DuoTrack, RoundedCornerShape(16.dp))
             .background(DuoCloud, RoundedCornerShape(16.dp))
-            .padding(horizontal = 6.dp, vertical = 8.dp)
     ) {
         val width = size.width
         val height = size.height
@@ -600,15 +793,17 @@ fun FrequencyGraph(history: List<Float>, modifier: Modifier = Modifier) {
             color = DuoMuted.toArgb()
             textSize = PitchTrackLabelTextSizePx
             isAntiAlias = true
-            textAlign = Paint.Align.RIGHT
+            textAlign = Paint.Align.LEFT
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.NORMAL)
         }
 
-        val graphTop = height * 0.1f
-        val graphHeight = height * 0.8f
-        val minMidi = animatedCenterMidi - PitchTrackVisibleSemitoneSpan / 2f
+        val graphTop = 0f
+        val graphHeight = height
+        val traceWidth = (width - labelZoneWidthPx).coerceAtLeast(0f)
+        val dividerRight = traceWidth
+        val minMidi = displayedCenterMidi - PitchTrackVisibleSemitoneSpan / 2f
         val semitoneMarkers = pitchTrackSemitoneMarkers(
-            centerMidi = animatedCenterMidi,
+            centerMidi = displayedCenterMidi,
             visibleSemitoneSpan = PitchTrackVisibleSemitoneSpan
         )
 
@@ -618,54 +813,80 @@ fun FrequencyGraph(history: List<Float>, modifier: Modifier = Modifier) {
             drawLine(
                 color = dividerColor,
                 start = Offset(0f, y),
-                end = Offset(width, y),
+                end = Offset(dividerRight, y),
                 strokeWidth = dividerStrokePx,
                 pathEffect = dividerPathEffect
             )
 
             if (y in 0f..height) {
                 val label = NoteUtils.calculateNoteAndCents(midiToHz(midiValue.toFloat())).first
-                drawContext.canvas.nativeCanvas.drawText(label, width - 10f, y - 6f, dividerLabelPaint)
+                drawContext.canvas.nativeCanvas.drawText(label, dividerRight + labelGapPx, y - 6f, dividerLabelPaint)
             }
         }
 
         val traceStrokeWidthPx = PitchTrackTraceStrokeWidth.toPx()
-        if (history.isEmpty()) return@Canvas
+        val headGuideStrokeWidthPx = PitchTrackHeadGuideStrokeWidth.toPx()
+        if (visibleHistory.isEmpty()) return@Canvas
 
-        val step = pitchTrackXStep(width, PitchTrackXStepSampleCount)
-        val strokePath = androidx.compose.ui.graphics.Path()
-        val fillPath = androidx.compose.ui.graphics.Path()
+        val step = pitchTrackXStep(
+            traceWidth,
+            PitchTrackXStepSampleCount.coerceAtLeast(1)
+        )
 
         val normalizedPoints = mapFrequenciesToNormalizedY(
-            frequencies = history,
-            centerMidi = animatedCenterMidi,
+            frequencies = visibleHistory,
+            centerMidi = displayedCenterMidi,
             visibleSemitoneSpan = PitchTrackVisibleSemitoneSpan
         )
         if (normalizedPoints.isEmpty()) return@Canvas
-        var started = false
+        val lastDataIndex = (normalizedPoints.maxOfOrNull { it.index } ?: 0)
+        val usedWidth = (lastDataIndex * step).coerceAtMost(traceWidth)
+        val segments = pitchTrackContinuousSegments(normalizedPoints)
+        if (segments.isEmpty()) return@Canvas
+        val waveLeft = 0f
+        val waveTop = graphTop
+        val waveRight = traceWidth
+        val waveBottom = graphTop + graphHeight
+        val waveAnchorX = pitchTrackWaveAnchorX(waveWidth = waveRight, isRunning = isRunning)
+        val pauseCompensationPx = if (!isRunning) {
+            pitchTrackPauseCompensationPx(waveRight)
+        } else {
+            0f
+        }
+        val timeMarkerX = pitchTrackTimeMarkerX(waveWidth = waveRight).coerceIn(waveLeft, waveRight)
+        val relativeOverflowOffset = if (isRunning) 0 else historyOverflowOffset - panMinOffset
+        val trailingOffset = waveAnchorX - usedWidth + (relativeOverflowOffset * step) + pauseCompensationPx
 
-        for ((index, normalizedY) in normalizedPoints) {
-            val x = index * step
-            val y = normalizedY * graphHeight + graphTop
+        drawContext.canvas.save()
+        // 裁剪绘图区域，确保波动线和填充不会超出绘图区边界
+        drawContext.canvas.clipRect(waveLeft, waveTop, waveRight, waveBottom)
 
-            if (!started) {
-                strokePath.moveTo(x, y)
-                fillPath.moveTo(x, y)
-                started = true
-            } else {
+        for (segment in segments) {
+            if (segment.isEmpty()) continue
+
+            val firstSample = segment.first()
+            val firstX = (firstSample.index * step + trailingOffset).coerceIn(waveLeft, waveRight)
+            val firstY = firstSample.normalizedY * graphHeight + graphTop
+
+            val strokePath = androidx.compose.ui.graphics.Path().apply {
+                moveTo(firstX, firstY)
+            }
+            val fillPath = androidx.compose.ui.graphics.Path().apply {
+                moveTo(firstX, firstY)
+            }
+
+            var lastX = firstX
+            for (pointIndex in 1 until segment.size) {
+                val sample = segment[pointIndex]
+                val x = (sample.index * step + trailingOffset).coerceIn(waveLeft, waveRight)
+                val y = sample.normalizedY * graphHeight + graphTop
                 strokePath.lineTo(x, y)
                 fillPath.lineTo(x, y)
+                lastX = x
             }
-        }
 
-        if (started) {
-            drawContext.canvas.save()
-            // 裁剪绘图区域，确保波动线（Trace）和填充色（Fill）不会超出预定的绘图主体区域（80% 高度）
-            // 这样波动线就不会覆盖到顶部的标签区域或超出底部边框
-            drawContext.canvas.clipRect(0f, graphTop, width, graphTop + graphHeight)
-
-            fillPath.lineTo((history.size - 1) * step, graphTop + graphHeight)
-            fillPath.lineTo(0f, graphTop + graphHeight)
+            fillPath.lineTo(lastX, waveBottom)
+            fillPath.lineTo(firstX, waveBottom)
             fillPath.close()
 
             drawPath(
@@ -680,7 +901,15 @@ fun FrequencyGraph(history: List<Float>, modifier: Modifier = Modifier) {
                 color = DuoBlue,
                 style = Stroke(width = traceStrokeWidthPx, cap = StrokeCap.Round)
             )
-            drawContext.canvas.restore()
         }
+
+        drawLine(
+            color = PitchTrackHeadGuideColor,
+            start = Offset(timeMarkerX, waveTop),
+            end = Offset(timeMarkerX, waveBottom),
+            strokeWidth = headGuideStrokeWidthPx
+        )
+
+        drawContext.canvas.restore()
     }
 }
