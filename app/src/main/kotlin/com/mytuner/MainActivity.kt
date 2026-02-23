@@ -38,8 +38,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -79,6 +81,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 
 val DuoSky = Color(0xFFE8F4FF)
@@ -113,6 +117,88 @@ private val PitchTrackLabelZoneWidth = 56.dp
 private val PitchTrackLabelGap = 6.dp
 private val PitchTrackHeadGuideColor = DuoYellow.copy(alpha = 0.85f)
 private val PitchTrackHeadGuideStrokeWidth = 1.5.dp
+
+private data class AdaptiveLayoutSpec(
+    val horizontalPadding: Dp,
+    val verticalPadding: Dp,
+    val cardSpacing: Dp,
+    val portraitGaugeSize: Dp,
+    val portraitNoteFontSize: TextUnit,
+    val landscapeGaugeSize: Dp,
+    val landscapeNoteFontSize: TextUnit,
+    val portraitTrackHeight: Dp
+)
+
+private fun adaptiveLayoutSpec(screenWidthDp: Int, screenHeightDp: Int): AdaptiveLayoutSpec {
+    val minSide = min(screenWidthDp, screenHeightDp)
+    val maxSide = max(screenWidthDp, screenHeightDp)
+    val compactWidth = screenWidthDp < 360
+    val compactHeight = screenHeightDp < 700
+
+    val portraitGaugeSize = when {
+        compactWidth -> 216.dp
+        minSide < 400 -> 240.dp
+        minSide < 600 -> 280.dp
+        minSide < 840 -> 340.dp
+        else -> 400.dp
+    }
+
+    val portraitNoteFontSize = when {
+        compactWidth -> 68.sp
+        minSide < 400 -> 80.sp
+        minSide < 600 -> 94.sp
+        minSide < 840 -> 112.sp
+        else -> 126.sp
+    }
+
+    val portraitTrackHeight = when {
+        compactHeight -> 210.dp
+        minSide < 400 -> 230.dp
+        minSide < 600 -> PitchTrackGraphHeight
+        minSide < 840 -> 320.dp
+        else -> 380.dp
+    }
+
+    val landscapeGaugeSize = when {
+        minSide < 430 -> 180.dp
+        maxSide < 900 -> 210.dp
+        maxSide < 1200 -> 280.dp
+        else -> 340.dp
+    }
+
+    val landscapeNoteFontSize = when {
+        minSide < 430 -> 60.sp
+        maxSide < 900 -> 72.sp
+        maxSide < 1200 -> 90.sp
+        else -> 104.sp
+    }
+
+    return AdaptiveLayoutSpec(
+        horizontalPadding = when {
+            compactWidth -> 12.dp
+            screenWidthDp >= 1200 -> 36.dp
+            screenWidthDp >= 900 -> 28.dp
+            else -> 20.dp
+        },
+        verticalPadding = when {
+            compactHeight -> 14.dp
+            screenHeightDp >= 1200 -> 36.dp
+            screenHeightDp >= 900 -> 28.dp
+            else -> 24.dp
+        },
+        cardSpacing = when {
+            compactHeight -> 10.dp
+            minSide >= 900 -> 20.dp
+            minSide >= 600 -> 16.dp
+            else -> 14.dp
+        },
+        portraitGaugeSize = portraitGaugeSize,
+        portraitNoteFontSize = portraitNoteFontSize,
+        landscapeGaugeSize = landscapeGaugeSize,
+        landscapeNoteFontSize = landscapeNoteFontSize,
+        portraitTrackHeight = portraitTrackHeight
+    )
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -158,6 +244,9 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
     val isInTune = state.pitch > 0 && abs(state.centsOff) < 5
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
+    val usePortraitScroll = configuration.screenHeightDp < 760
+    val layoutSpec = adaptiveLayoutSpec(configuration.screenWidthDp, configuration.screenHeightDp)
+    val portraitScrollState = rememberScrollState()
 
     val noteScale by animateFloatAsState(
         targetValue = if (isInTune) 1.06f else 1f,
@@ -245,14 +334,17 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        .padding(
+                            horizontal = layoutSpec.horizontalPadding,
+                            vertical = layoutSpec.verticalPadding
+                        ),
+                    horizontalArrangement = Arrangement.spacedBy(layoutSpec.cardSpacing)
                 ) {
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(layoutSpec.cardSpacing)
                     ) {
                         StatusCard(state = state, pulseScale = pulseScale)
                         TunerCard(
@@ -262,9 +354,9 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                             noteScale = noteScale,
                             noteColor = noteColor,
                             cardLift = cardLift,
-                            gaugeSize = 210.dp,
-                            gaugeHeight = 210.dp,
-                            noteFontSize = 72.sp
+                            gaugeSize = layoutSpec.landscapeGaugeSize,
+                            gaugeHeight = layoutSpec.landscapeGaugeSize,
+                            noteFontSize = layoutSpec.landscapeNoteFontSize
                         )
                     }
 
@@ -272,7 +364,7 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(layoutSpec.cardSpacing)
                     ) {
                         PitchTrackCard(
                             history = history,
@@ -288,7 +380,7 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                                 .weight(1f),
                             contentModifier = Modifier
                                 .fillMaxSize()
-                                .padding(12.dp),
+                                .padding(layoutSpec.cardSpacing - 2.dp),
                             graphModifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -301,12 +393,22 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                     }
                 }
             } else {
-                Column(
-                    modifier = Modifier
+                val portraitContainerModifier = if (usePortraitScroll) {
+                    Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 20.dp, vertical = 24.dp),
+                        .verticalScroll(portraitScrollState)
+                } else {
+                    Modifier.fillMaxSize()
+                }
+
+                Column(
+                    modifier = portraitContainerModifier
+                        .padding(
+                            horizontal = layoutSpec.horizontalPadding,
+                            vertical = layoutSpec.verticalPadding
+                        ),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.SpaceBetween
+                    verticalArrangement = Arrangement.spacedBy(layoutSpec.cardSpacing)
                 ) {
                     StatusCard(state = state, pulseScale = pulseScale)
                     TunerCard(
@@ -316,9 +418,9 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                         noteScale = noteScale,
                         noteColor = noteColor,
                         cardLift = cardLift,
-                        gaugeSize = 280.dp,
-                        gaugeHeight = 280.dp,
-                        noteFontSize = 94.sp
+                        gaugeSize = layoutSpec.portraitGaugeSize,
+                        gaugeHeight = layoutSpec.portraitGaugeSize,
+                        noteFontSize = layoutSpec.portraitNoteFontSize
                     )
                     PitchTrackCard(
                         history = history,
@@ -328,7 +430,32 @@ fun PitchScreen(vm: PitchViewModel = viewModel()) {
                         onHistoryOffsetSamplesChange = { historyOffsetSamples = it },
                         verticalPanOffsetSemitone = verticalPanOffsetSemitone,
                         onVerticalPanOffsetSemitoneChange = { verticalPanOffsetSemitone = it },
-                        onPausedMarkerNoteNameChange = { pausedMarkerNoteName = it }
+                        onPausedMarkerNoteNameChange = { pausedMarkerNoteName = it },
+                        modifier = if (usePortraitScroll) {
+                            Modifier.fillMaxWidth()
+                        } else {
+                            Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        },
+                        contentModifier = if (usePortraitScroll) {
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                        } else {
+                            Modifier
+                                .fillMaxSize()
+                                .padding(16.dp)
+                        },
+                        graphModifier = if (usePortraitScroll) {
+                            Modifier
+                                .fillMaxWidth()
+                                .height(layoutSpec.portraitTrackHeight)
+                        } else {
+                            Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        }
                     )
                     ControlButton(
                         isRunning = state.isRunning,
